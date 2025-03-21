@@ -3,12 +3,19 @@
 #include<random>
 #include<fstream>
 #include<algorithm>
+#include<map>
 class Service{
 public:
   static bool randomBit(double prob){
      static std::default_random_engine generator(std::random_device{}());
      static std::bernoulli_distribution distribution(prob); //0.5 really just means I want 50% true and 50% false, might be anything
       return distribution(generator);  
+  }
+  static bool randomUniform(){
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> distro(0.0, 1.0);
+    return distro(gen);
   }
   static int randomInt(int MAX_INT){
      std::mt19937 mt{}; //oldest trick in the book: take mod x to keep in [0. x)
@@ -17,6 +24,15 @@ public:
   static double f(std::vector<double> p, double x){
      return p[0]*x*x+p[1]*x+p[2];
   }
+  static int binarySearch(std::vector<double> &v, double target){
+        int step=(1<<16), n=v.size(), currentPos=0;
+        while(step>0){
+            if(currentPos+step<n && v[currentPos+step]<target)
+               currentPos+=step;
+            step>>=1;
+        }
+        return currentPos;
+    }
 };
 class Chromosome{
     /// @brief "environmental" stuff: parameters for objective function, and interval over which we optimize
@@ -29,6 +45,24 @@ public:
         for(int  i=0; i<n; i++){
             genes.push_back(Service::randomBit(0.5));
         }
+    }
+    Chromosome(std::vector<bool> && v){
+       genes=std::move(v);
+    }
+    //we use 'ionizing radiation' on the chromosome, to make a new one(we can't destroy the elder)
+    Chromosome radiate(double odds){ 
+       std::vector<bool> genome;
+       for(bool gene: genes){
+           double randomNr=Service::randomUniform();
+           if(randomNr<odds)
+             genome.push_back(~gene);//flip gene
+           else
+             genome.push_back(gene);
+       }
+       return Chromosome(std::move(genome));
+    }
+    bool getGene(int locus){
+        return genes[locus];
     }
     static void setEnvironment(double lo_, double hi_, std::vector<double>&& param_){
         lo=lo_, hi=hi_;
@@ -88,11 +122,27 @@ class Operation{
          for(auto c: genome)
            c.printBits();
         std::vector<Chromosome> newGenome;
+        ///STEP 1.2: build a method of selecting chromosomes proportional to fitness
+        double sum=0;
+        std::vector<double> relativeFitness, absoluteFitness;
+        std::map<double, int> getChromosomeByKey;
+        for(auto chromosome: genome){
+            absoluteFitness.push_back(sum);
+            sum+=chromosome.getFitness();
+        }
+        for(double fitScore: absoluteFitness){
+            relativeFitness.push_back(fitScore/sum); ///TODO see if we can avoid dividing floats, those take way tooo long
+            ///TRICK: the ith entry in the array is always the i-th chromosome
+        } 
          ///STEP TWO: select 1-crossover_ratio-mutate_ratio of the base set for progressing them, since they're clearly good
          int index;
          std::sort(genome.begin(), genome.end(),  compareChromosomes);
-         for(index=0; index<(int)(pop_size*(1-crossover_ratio-mutate_ratio)); index++){
-             
+         newGenome.push_back(genome[0]);
+         //we will do so via "roulette selection", pick a random number in the array and see what we get
+         for(index=1; index<(int)(pop_size*(1-crossover_ratio-mutate_ratio)); index++){
+             double seed=Service::randomUniform();
+             int targetChromo=Service::binarySearch(relativeFitness, seed);
+             newGenome.push_back(genome[targetChromo]);
          }
          //these are THE SPECIAL ONEs, and they advance to the next change unmoved
          ///STEP THREE: crossover_ratio times, pick 2 of THE SPECIAL ONES and recombine them (THE KIDS)
@@ -100,10 +150,30 @@ class Operation{
             //we choose who breeds
             int dad=Service::randomInt(index-1), mom=Service::randomInt(index-1);
             int breakingPoint=Service::randomInt(chromo_size);
-            index++;
+            std::vector<bool> new1, new2;
+            for(int i=0; i<chromo_size; i++){
+                if(i<breakingPoint){
+                   new1.push_back(newGenome[dad].getGene(i));
+                   new2.push_back(newGenome[mom].getGene(i));
+                }
+                else{
+                   new1.push_back(newGenome[mom].getGene(i));
+                   new2.push_back(newGenome[dad].getGene(i));
+                }
+            }
+            newGenome.emplace_back(Chromosome(std::move(new1)));
+            newGenome.emplace_back(Chromosome(std::move(new2)));
+            index+=2;
          }
          ///STEP FOUR: From among all these, flip a few positions on some and check
-
+        while(index<pop_size){
+            int base=Service::randomInt(index-1);
+            Chromosome radiated_chromosome=newGenome[base].radiate(0.1);
+            newGenome.push_back(radiated_chromosome);
+            index++;
+        }
+        ///STEP FIVE: overwrite the whole generation
+        this->genome=std::move(newGenome);
      }
 };
 int main(){
