@@ -46,20 +46,11 @@ public:
             genes.push_back(Service::randomBit(0.5));
         }
     }
-    Chromosome(std::vector<bool> && v){
-       genes=std::move(v);
-    }
+    Chromosome(const std::vector<bool> &g): genes(g) {}
     //we use 'ionizing radiation' on the chromosome, to make a new one(we can't destroy the elder)
-    Chromosome radiate(double odds){ 
-       std::vector<bool> genome;
-       for(bool gene: genes){
-           double randomNr=Service::randomUniform();
-           if(randomNr<odds)
-             genome.push_back(~gene);//flip gene
-           else
-             genome.push_back(gene);
-       }
-       return Chromosome(std::move(genome));
+    void radiate(){ 
+        int position=Service::randomInt(genes.size());
+        genes[position]=(!genes[position]);
     }
     bool getGene(int locus){
         return genes[locus];
@@ -114,22 +105,33 @@ class Operation{
          Chromosome::setEnvironment(lo, hi, std::move(param));
      }
      static double compareChromosomes(Chromosome c1, Chromosome c2){
-        return c1.getFitness()<c2.getFitness();
+        return c1.getFitness()>c2.getFitness();
      }
-     void runIteration(){///the magic happens here
+     double getMaxFitness(){
+        double currentMaxFitness=-1e7;
+        for(auto chrom: genome)
+          currentMaxFitness=std::max(currentMaxFitness, chrom.getFitness());
+        return currentMaxFitness;
+     }
+     double getAverageFitness(){
+        double sumFitness=0;
+        for(auto chrom: genome)
+           sumFitness+=chrom.getFitness();
+        return sumFitness/pop_size;
+     }
+     void runIteration(int i){///the magic happens here
          ///STEP ONE: generate fitness scores for all chromosomes
-         this->setChromosomes();
-         for(auto c: genome)
-           c.printBits();
         std::vector<Chromosome> newGenome;
+        for(auto x: genome)
+            x.printBits();
         ///STEP 1.2: build a method of selecting chromosomes proportional to fitness
         double sum=0;
         std::vector<double> relativeFitness, absoluteFitness;
-        std::map<double, int> getChromosomeByKey;
         for(auto chromosome: genome){
             absoluteFitness.push_back(sum);
             sum+=chromosome.getFitness();
         }
+        
         for(double fitScore: absoluteFitness){
             relativeFitness.push_back(fitScore/sum); ///TODO see if we can avoid dividing floats, those take way tooo long
             ///TRICK: the ith entry in the array is always the i-th chromosome
@@ -161,28 +163,34 @@ class Operation{
                    new2.push_back(newGenome[dad].getGene(i));
                 }
             }
-            newGenome.emplace_back(Chromosome(std::move(new1)));
-            newGenome.emplace_back(Chromosome(std::move(new2)));
+            newGenome.push_back(Chromosome(new1));
+            newGenome.push_back(Chromosome(new2));
             index+=2;
          }
          ///STEP FOUR: From among all these, flip a few positions on some and check
         while(index<pop_size){
             int base=Service::randomInt(index-1);
-            Chromosome radiated_chromosome=newGenome[base].radiate(0.1);
-            newGenome.push_back(radiated_chromosome);
-            index++;
+            Chromosome c1(genome[base]);
+            c1.radiate();
+            newGenome.push_back(c1);
+            index++;///FINALLY, IT LEARNS
         }
         ///STEP FIVE: overwrite the whole generation
-        this->genome=std::move(newGenome);
+        std::swap(this->genome, newGenome);
      }
 };
 int main(){
     std::ifstream fin("hyperpar.in");
-    int pop_size=30, chromo_size=15, lo=0, hi=2, stages=1;
+    int pop_size=30, chromo_size=4, lo=-5, hi=15, stages=2;
     double crossoverRatio=0.2, mutateRatio=0.1, a=1, b=-1, c=0;
     std::vector<double> params{a, b, c};
     Operation env(pop_size, chromo_size, lo, hi, stages, crossoverRatio, mutateRatio);
     env.setParameters(params);
-    env.runIteration();
+    env.setChromosomes();///we generate an initial population
+    for(int i=0; i<stages; i++){
+       env.runIteration(i);
+       std::cout<<"Generatia "<<i+1<<"maxim: "<<env.getMaxFitness()<<"\n";
+       std::cout<<"Generatia "<<i+1<<"medie: "<<env.getAverageFitness()<<"\n";
+    }
     return 0;
 }
