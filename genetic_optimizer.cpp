@@ -4,14 +4,19 @@
 #include<fstream>
 #include<algorithm>
 #include<map>
+#include<string>
 class Service{
 public:
+  static std::ofstream fout;
   static bool randomBit(double prob){
      static std::default_random_engine generator(std::random_device{}());
      static std::bernoulli_distribution distribution(prob); //0.5 really just means I want 50% true and 50% false, might be anything
       return distribution(generator);  
   }
-  static bool randomUniform(){
+  static double modul(double x){
+    return (x<0) ? -x : x;
+  }
+  static double randomUniform(){
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<> distro(0.0, 1.0);
@@ -21,9 +26,11 @@ public:
      std::mt19937 mt{}; //oldest trick in the book: take mod x to keep in [0. x)
      return mt()%MAX_INT;
   }
+  /// @brief  
+  // This is the function we're optimizing. For now, no negative values in range, it fucks with the averaging 
   static double f(std::vector<double> p, double x){
      return p[0]*x*x+p[1]*x+p[2];
-  }
+  } //TODO: find some way to map all real values into [0, 1] 
   static int binarySearch(std::vector<double> &v, double target){
         int step=(1<<16), n=v.size(), currentPos=0;
         while(step>0){
@@ -34,6 +41,7 @@ public:
         return currentPos;
     }
 };
+std::ofstream Service::fout("log.txt");
 class Chromosome{
     /// @brief "environmental" stuff: parameters for objective function, and interval over which we optimize
     /// which is commmon to all chromosomes
@@ -74,9 +82,10 @@ public:
        return Service::f(this->params, this->decode()); 
     }
     void printBits(){
+        ///eg. magic numbers, 
         for(bool g: genes)
-            std::cout<<g;
-        std::cout<<"\n";
+            Service::fout<<g;
+        Service::fout<<"\n";
     }
 };
 //sucks to do this, but I must initalize the env
@@ -88,11 +97,12 @@ class Operation{
     std::vector<Chromosome> genome;
     int pop_size, chromo_size, lo, hi, stages;
     double crossover_ratio, mutate_ratio;
+    bool showMechanism;
     std::vector<double> param; 
     public:
      Operation(int ps, int cs, int lo_, int hi_, int stages_, double crossr, double mutr):
-     pop_size(ps), chromo_size(cs), lo(lo_), hi(hi_), stages(stages_), crossover_ratio(crossr), mutate_ratio(mutr) {
-
+     pop_size(ps), chromo_size(cs), lo(lo_), hi(hi_), stages(stages_), crossover_ratio(crossr), mutate_ratio(mutr){
+         showMechanism=true;
      }
      void setParameters(std::vector<double> &ps){
         for(auto parameter: ps)
@@ -119,78 +129,133 @@ class Operation{
            sumFitness+=chrom.getFitness();
         return sumFitness/pop_size;
      }
-     void runIteration(int i){///the magic happens here
-         ///STEP ONE: generate fitness scores for all chromosomes
-        std::vector<Chromosome> newGenome;
-        for(auto x: genome)
+     void runIteration(int i){
+    /// Printing initial genome if i == 0
+    std::string outputFile("log.txt");
+    if(i == 0){
+        Service::fout << "Populatia initiala:\n";
+        for(auto &x : genome)
             x.printBits();
-        ///STEP 1.2: build a method of selecting chromosomes proportional to fitness
-        double sum=0;
-        std::vector<double> relativeFitness, absoluteFitness;
-        for(auto chromosome: genome){
-            absoluteFitness.push_back(sum);
-            sum+=chromosome.getFitness();
+    }
+
+    /// STEP ONE: generate fitness scores for all chromosomes
+    std::vector<Chromosome> newGenome;
+    double sum = 0;
+    std::vector<double> relativeFitness, absoluteFitness;
+    for(auto &chromosome : genome){
+        absoluteFitness.push_back(sum);
+        sum += chromosome.getFitness(); //This cannot take negative vlaues, they don;t easily map to [0, 1]
+    }
+    for(double fitScore : absoluteFitness)
+            relativeFitness.push_back(fitScore / sum);
+    relativeFitness.push_back(1.0);  //flag for ease of computation
+    /// Print partial sums and probability of selection if i == 0
+    if(i == 0){
+        Service::fout << "Probabilitate de selectie per cromozom:\n";
+        Service::fout<<relativeFitness[0]<<"\n";
+        for(size_t j = 1; j < relativeFitness.size(); j++){
+            Service::fout<<relativeFitness[j]-relativeFitness[j-1]<<"\n";
         }
-        
-        for(double fitScore: absoluteFitness){
-            relativeFitness.push_back(fitScore/sum); ///TODO see if we can avoid dividing floats, those take way tooo long
-            ///TRICK: the ith entry in the array is always the i-th chromosome
-        } 
-         ///STEP TWO: select 1-crossover_ratio-mutate_ratio of the base set for progressing them, since they're clearly good
-         int index;
-         std::sort(genome.begin(), genome.end(),  compareChromosomes);
-         newGenome.push_back(genome[0]);
-         //we will do so via "roulette selection", pick a random number in the array and see what we get
-         for(index=1; index<(int)(pop_size*(1-crossover_ratio-mutate_ratio)); index++){
-             double seed=Service::randomUniform();
-             int targetChromo=Service::binarySearch(relativeFitness, seed);
-             newGenome.push_back(genome[targetChromo]);
-         }
-         //these are THE SPECIAL ONEs, and they advance to the next change unmoved
-         ///STEP THREE: crossover_ratio times, pick 2 of THE SPECIAL ONES and recombine them (THE KIDS)
-         while(index<(int)(pop_size*(1-mutate_ratio))){
-            //we choose who breeds
-            int dad=Service::randomInt(index-1), mom=Service::randomInt(index-1);
-            int breakingPoint=Service::randomInt(chromo_size);
-            std::vector<bool> new1, new2;
-            for(int i=0; i<chromo_size; i++){
-                if(i<breakingPoint){
-                   new1.push_back(newGenome[dad].getGene(i));
-                   new2.push_back(newGenome[mom].getGene(i));
-                }
-                else{
-                   new1.push_back(newGenome[mom].getGene(i));
-                   new2.push_back(newGenome[dad].getGene(i));
-                }
+        Service::fout<< "Probablitate cumulativa: \n";
+        for(size_t j=0; j<relativeFitness.size()-1; j++){
+           Service::fout<<relativeFitness[j]<<"\n";
+        }
+    }
+
+    /// STEP TWO: Select chromosomes based on fitness
+    int index;
+    std::sort(genome.begin(), genome.end(), compareChromosomes);
+    newGenome.push_back(genome[0]);
+
+    for(index = 1; index < (int)(pop_size * (1 - crossover_ratio - mutate_ratio)); index++){
+        double seed = Service::randomUniform();
+        int targetChromo = Service::binarySearch(relativeFitness, seed);
+        if(i==0){
+          Service::fout<<"Cu seedul "<<seed;
+          Service::fout<<" alegem sa progresam cromozomul "<<targetChromo<<"\n";
+        }
+        newGenome.push_back(genome[targetChromo]);
+    }///we picked a bunch of THE SPECIAL ONES, these go forward as is
+
+    /// Print genome after selection if i == 0
+    if(i == 0){
+        Service::fout << "Dupa doua etape\n";
+        for(auto &x : newGenome)
+            x.printBits();
+    }
+
+    /// STEP THREE: In meiosis, homologues cross over each other and informtion changes spots
+    while(index < (int)(pop_size * (1 - mutate_ratio))){
+        int dad = Service::randomInt(index - 1);
+        int mom = Service::randomInt(index - 1);
+        int breakingPoint = Service::randomInt(chromo_size);
+
+        std::vector<bool> new1, new2;
+        for(int j = 0; j < chromo_size; j++){
+            if(j < breakingPoint){
+                new1.push_back(newGenome[dad].getGene(j)); //the way this basically works is 
+                new2.push_back(newGenome[mom].getGene(j));
+            } else {
+                new1.push_back(newGenome[mom].getGene(j));
+                new2.push_back(newGenome[dad].getGene(j));
             }
-            newGenome.push_back(Chromosome(new1));
-            newGenome.push_back(Chromosome(new2));
-            index+=2;
-         }
-         ///STEP FOUR: From among all these, flip a few positions on some and check
-        while(index<pop_size){
-            int base=Service::randomInt(index-1);
-            Chromosome c1(genome[base]);
-            c1.radiate();
-            newGenome.push_back(c1);
-            index++;///FINALLY, IT LEARNS
         }
-        ///STEP FIVE: overwrite the whole generation
-        std::swap(this->genome, newGenome);
-     }
+
+        if(i == 0){
+            Service::fout << "Am facut incrucisarea lui ";
+            newGenome[dad].printBits();
+            Service::fout << " cu ";
+            newGenome[mom].printBits(); 
+            Service::fout<<" si am taiat la " << breakingPoint << "\n";
+
+        }
+
+        newGenome.push_back(Chromosome(new1));
+        newGenome.push_back(Chromosome(new2));
+        Service::fout<<"Si se adauga: \n";
+        newGenome[newGenome.size()-2].printBits();
+        newGenome[newGenome.size()-1].printBits();
+        index += 2;
+    }
+    ///We also output the genome after step 3, mutations
+    if(i == 0){
+        Service::fout << "Dupa pasul 3\n";
+        for(auto &x : newGenome)
+            x.printBits();
+    }
+    /// STEP FOUR: Mutation operation
+    while(index < pop_size){
+        int base = Service::randomInt(index - 1);
+        Chromosome c1(genome[base]);
+        c1.radiate();
+        newGenome.push_back(c1);
+        index++;
+    }
+
+    /// Print new genome if i == 0
+    if(i == 0){
+        Service::fout << "Si asta e populatia finala\n";
+        for(auto &x : newGenome)
+            x.printBits();
+    }
+    /// STEP FIVE: Overwrite the whole generation
+    std::swap(this->genome, newGenome);
+   }
 };
 int main(){
-    std::ifstream fin("hyperpar.in");
-    int pop_size=30, chromo_size=4, lo=-5, hi=15, stages=2;
-    double crossoverRatio=0.2, mutateRatio=0.1, a=1, b=-1, c=0;
+    std::ifstream fin("hyperpar.txt");
+    int pop_size, chromo_size, lo, hi, stages;
+    double crossoverRatio, mutateRatio, a, b, c;
+    //it's ugly as fuck, but we have to read a lot of stuff with specific names
+    fin>>pop_size>>chromo_size>>lo>>hi>>stages>>crossoverRatio>>mutateRatio>>a>>b>>c;
     std::vector<double> params{a, b, c};
     Operation env(pop_size, chromo_size, lo, hi, stages, crossoverRatio, mutateRatio);
     env.setParameters(params);
     env.setChromosomes();///we generate an initial population
     for(int i=0; i<stages; i++){
        env.runIteration(i);
-       std::cout<<"Generatia "<<i+1<<"maxim: "<<env.getMaxFitness()<<"\n";
-       std::cout<<"Generatia "<<i+1<<"medie: "<<env.getAverageFitness()<<"\n";
+       Service::fout<<"Generatia "<<i+1<<"maxim: "<<env.getMaxFitness()<<"\n";
+       Service::fout<<"Generatia "<<i+1<<"medie: "<<env.getAverageFitness()<<"\n";
     }
     return 0;
 }
